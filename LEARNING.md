@@ -8,7 +8,7 @@ Goal: rebuild productiion grade backend concept step by step
 |1|FastAPI hello (`main.py`)|Success|
 |2|Settings (`config.py`)|Success|
 |3|Database (`database.py`)|Success|
-|4|First model (Conversation)||
+|4|First model (Conversation)|Success|
 |5|Router + create conversation API||
 |6|Message + simple chat (no AI)||
 |7|Call an LLM||

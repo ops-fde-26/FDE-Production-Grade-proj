@@ -81,3 +81,48 @@ Connect to a database and give routes a session via `get_db()`, same pattern as 
 
 - In production we use Postgres.
 - Here we use SQLite to keep setup easy.
+
+# Step 4 - First model (Conversation)
+
+## Goal
+
+Define a database table as a Python class and create it in SQLite.
+
+## Why this step
+
+- `database.py` only sets up the connection.
+- A model is a Python class that maps to a SQL table.
+- We start with one table, `Conversation` (a chat thread). Message comes in a later step.
+
+## What we did
+
+- Created `agent-lab/backend/app/models.py` with a `Conversation` model (`Base`) and table name `conversation`
+  - `id`: `Column(Integer, primary_key=True, index=True)`
+  - `title`: `Column(String, default="new chat")`
+  - `created_at`: `Column(DateTime, default=lambda: datetime.now(timezone.utc))`
+- Updated `agent-lab/backend/app/main.py` to import `models` (registers the model on `Base`) and call `Base.metadata.create_all(bind=engine)`, so the table is created when the app starts
+- Ran the app with uvicorn; SQLite created `agent_lab.db` with the `conversation` table
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+## Output
+
+http://127.0.0.1:8000/health
+
+```json
+{"status": "ok", "app": "agent lab", "debug": true}
+```
+
+Table `conversation` in `agent_lab.db`:
+
+| column | type |
+|---|---|
+| id | INTEGER |
+| title | VARCHAR |
+| created_at | DATETIME |
