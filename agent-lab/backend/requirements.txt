@@ -4,3 +4,5 @@ fastapi
 uvicorn[standard]
 # pydantic-settings: read environment variables into a typed settings class
 pydantic-settings
+# SQLAlchemy: ORM + engine/sessions
+sqlalchemy

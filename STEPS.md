@@ -60,3 +60,24 @@ http://127.0.0.1:8000/health
 ```json
 {"status": "ok", "app": "agent lab", "debug": true}
 ```
+
+# Step 3 - Database (`database.py`)
+
+## Goal
+
+Connect to a database and give routes a session via `get_db()`, same pattern as production `database.py`.
+
+## Why this step
+
+- Chat, agent, users all need durable storage.
+- FastAPI handlers should not open or close DB connections ad hoc.
+- We centralize:
+  - `engine`: connection pool to the DB
+  - `SessionLocal`: factory for DB sessions (a session is a unit of work)
+  - `Base`: parent class for ORM models (our next step)
+  - `get_db()`: FastAPI dependency that yields a session and always closes it
+
+## Note
+
+- In production we use Postgres.
+- Here we use SQLite to keep setup easy.
