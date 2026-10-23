@@ -9,7 +9,7 @@ Goal: rebuild productiion grade backend concept step by step
 |2|Settings (`config.py`)|Success|
 |3|Database (`database.py`)|Success|
 |4|First model (Conversation)|Success|
-|5|Router + create conversation API||
+|5|Router + create conversation API|Success|
 |6|Message + simple chat (no AI)||
 |7|Call an LLM||
 |8|One tool||

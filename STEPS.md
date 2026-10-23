@@ -126,3 +126,59 @@ Table `conversation` in `agent_lab.db`:
 | id | INTEGER |
 | title | VARCHAR |
 | created_at | DATETIME |
+
+# Step 5 - Router (create and list conversation)
+
+## Goal
+
+HTTP API to create and list conversations.
+
+## Notes
+
+- The router is the HTTP layer: it uses `get_db` and talks to the model.
+- `main.py` should stay thin.
+- Feature routes live in `routers/`, then get mounted with `include_router`.
+
+## What we did
+
+- Created `agent-lab/backend/app/routers/` with an empty `__init__.py`
+- Created `agent-lab/backend/app/routers/conversations.py`:
+  - `router = APIRouter(prefix="/api/conversations", tags=["conversations"])`
+  - `ConversationCreate` (request body): `title: str = "new chat"`
+  - `ConversationOut` (response): `id: int`, `title: str`, with `from_attributes = True` so it reads from the ORM model
+  - `POST /api/conversations` (`create_conversation`): uses `get_db`, adds a `Conversation` row, commits, refreshes and returns it
+  - `GET /api/conversations` (`list_conversations`): uses `get_db` and returns all conversations, newest first (`order_by(Conversation.id.desc())`)
+- Updated `agent-lab/backend/app/main.py` to mount the router with `app.include_router(conversations.router)`; `/health` and `create_all` are unchanged, so `main.py` stays thin
+- Ran the app with uvicorn and tested create and list with curl
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+```bash
+# create
+curl -X POST http://127.0.0.1:8000/api/conversations -H "Content-Type: application/json" -d '{"title":"first chat"}'
+
+# list
+curl http://127.0.0.1:8000/api/conversations
+```
+
+## Output
+
+Create:
+
+```json
+{"id": 1, "title": "first chat"}
+```
+
+List:
+
+```json
+[{"id": 1, "title": "first chat"}]
+```
+
+An empty body `{}` creates a conversation with the default title `new chat`.
