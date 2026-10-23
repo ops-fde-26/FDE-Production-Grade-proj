@@ -242,3 +242,105 @@ Start the server first (`uvicorn app.main:app --reload --port 8000` from `agent-
 - The final run used the title `first chat` (`{"id":1,"title":"first chat"}`); that is the output shown above in "Output".
 - Code checks: `ruff check --select I` (import order) passes on `main.py`. Ruff flags `Depends(get_db)` in argument defaults (`B008`) and Pydantic warns that `class Config` is deprecated (use `ConfigDict`). Both are known and left as they are.
 - `agent_lab.db` is a local file and is not committed.
+
+# Step 7 - Call an real LLM
+
+## Goal
+
+Replace the echo with a model reply.
+
+## Notes
+
+- Production mainly talks to a LiteLLM proxy.
+- Here we call the OpenRouter API directly.
+- The key is `OPENROUTER_API_KEY` in `agent-lab/.env` (gitignored), loaded through `config.py` into `settings.openai_api_key`.
+- `config.py` also has `openai_base_url` (`https://openrouter.ai/api/v1`) and `openai_model` (`openai/gpt-4o-mini`, GPT-4o mini on OpenRouter).
+
+## What we did
+
+- Added `openai` to `agent-lab/backend/requirements.txt` (Python SDK to call the LLM, used with OpenRouter) and installed the requirements
+- Updated `agent-lab/backend/app/config.py` (`Settings`):
+  - loads `agent-lab/.env` through an absolute path built from the file location, so it works from any working directory (`extra="ignore"`)
+  - `openai_api_key`: default `""`, read from the `OPENROUTER_API_KEY` variable in `.env` (`validation_alias`)
+  - `openai_base_url`: `https://openrouter.ai/api/v1`
+  - `openai_model`: `openai/gpt-4o-mini` (GPT-4o mini on OpenRouter)
+- Created `agent-lab/backend/app/services/` with an empty `__init__.py` and `llm.py`
+- `agent-lab/backend/app/services/llm.py`: `get_chat_reply(user_message: str) -> str`
+  - raises `RuntimeError("OpenAI API key is not set")` when the key is blank
+  - builds `OpenAI(api_key=..., base_url=...)` from settings
+  - calls `client.chat.completions.create` with the model from settings, a system message (`"you are helpful assistant"`) and the user message
+  - returns `response.choices[0].message.content or ""`
+- Added a `Message` model to `agent-lab/backend/app/models.py` (table `message`): `id`, `conversation_id` (foreign key to `conversation.id`, indexed, not null), `role`, `content` (`Text`), `created_at`. The table is created on startup by the existing `create_all`
+- Created `agent-lab/backend/app/routers/chat.py`:
+  - `router = APIRouter(prefix="/api/chat", tags=["chats"])`
+  - `ChatRequest`: `conversation_id: int`, `message: str`
+  - `ChatResponse`: `conversation_id: int`, `user_message: str`, `assistant_message: str`
+  - `POST /api/chat` (`chat`) uses `get_db` and does the following in order:
+    1. looks up the `Conversation` by `body.conversation_id`; returns 404 `Conversation not found` if it is missing
+    2. adds the user `Message` (`role="user"`) to the session
+    3. calls `get_chat_reply(body.message)`; any exception becomes a 502 with `LLM error: <error>`
+    4. adds the assistant `Message` (`role="assistant"`, content = reply), then commits both messages together
+    5. returns `ChatResponse`
+- Updated `agent-lab/backend/app/main.py` to import `chat` and mount it with `app.include_router(chat.router)` after the conversations router
+- Note: the `Message` model and the chat route were built in this step, so the Step 6 pieces (message + simple chat) are covered here, and the echo was never built separately
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+```bash
+# create a conversation
+curl -i -X POST http://127.0.0.1:8000/api/conversations -H "Content-Type: application/json" -d '{"title":"llm test"}'
+
+# chat in a conversation (a real call to OpenRouter, costs a small amount of credit)
+curl -i -X POST http://127.0.0.1:8000/api/chat -H "Content-Type: application/json" -d '{"conversation_id":1,"message":"Say hello in one short sentence."}'
+```
+
+## Output
+
+Create a conversation:
+
+```json
+{"id": 2, "title": "llm test"}
+```
+
+Chat (HTTP 200):
+
+```json
+{"conversation_id": 1, "user_message": "Say hello in one short sentence.", "assistant_message": "Hello!"}
+```
+
+Unknown conversation (HTTP 404):
+
+```json
+{"detail": "Conversation not found"}
+```
+
+## Testing
+
+1. `GET /health` returned 200 with `{"status":"ok","app":"agent lab","debug":true}`, so the app still starts with the new router.
+2. `POST /api/conversations` returned 200 with `{"id":2,"title":"llm test"}`.
+3. `POST /api/chat` with `conversation_id` 1 returned 200 and the model reply `Hello!`. This was a real call to OpenRouter with `openai/gpt-4o-mini`.
+4. The database was checked directly in `agent_lab.db`. The `message` table had two rows for conversation 1:
+   - `user`: `Say hello in one short sentence.`
+   - `assistant`: `Hello!`
+5. `POST /api/chat` with `conversation_id` 999 returned 404 `Conversation not found`, and no message row was saved for it.
+
+### What the tests proved
+
+- The key loads from `agent-lab/.env` and the OpenRouter call works with the configured base URL and model.
+- The user message and the assistant reply are both saved, in order, in the `message` table.
+- A missing conversation stops the request before the LLM is called or anything is saved.
+
+### Notes on the testing
+
+- Not tested: the 502 path (`LLM error: ...`) and the `RuntimeError` for a blank key. Both come from the code but were not triggered.
+- The first start failed with `ImportError: cannot import name 'Message'` and then `No module named 'openai'`, because the model was missing and the package was not installed. Adding `Message` and running `pip install -r requirements.txt` fixed both.
+- The 502 response includes the raw error text from the call, so it can show provider error details to the client.
+- Code checks: ruff import order and unused-import checks pass on all changed files. Ruff formatting passes on `config.py`, `models.py` and `services/llm.py`. `main.py` (the hand-formatted `/health` return) and `routers/chat.py` (the hand-written 404 block with an odd line break and trailing spaces) would still be reformatted by ruff; they were left as written.
+- `agent_lab.db` (with the test rows) and `agent-lab/.env` (the key) are local and are not committed.

@@ -6,3 +6,5 @@ uvicorn[standard]
 pydantic-settings
 # SQLAlchemy: ORM + engine/sessions
 sqlalchemy
+# openai: Python SDK to call the LLM (used with OpenRouter)
+openai
