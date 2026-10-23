@@ -2,3 +2,5 @@
 fastapi
 # Uvicorn: ASGI server that runs the FastAPI app
 uvicorn[standard]
+# pydantic-settings: read environment variables into a typed settings class
+pydantic-settings

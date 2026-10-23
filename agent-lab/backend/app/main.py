@@ -1,8 +1,13 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="agent lab")
+from app.config import settings
+
+app = FastAPI(title=settings.app_name)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", 
+    "app": settings.app_name, 
+    "debug": settings.debug
+    }

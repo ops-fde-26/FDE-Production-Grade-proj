@@ -6,7 +6,7 @@ Goal: rebuild productiion grade backend concept step by step
 |---|---|---|
 |0|Repo + git + LEARNING.md||
 |1|FastAPI hello (`main.py`)|Success|
-|2|Settings (`config.py`)||
+|2|Settings (`config.py`)|Success|
 |3|Database (`database.py`)||
 |4|First model (Conversation)||
 |5|Router + create conversation API||
