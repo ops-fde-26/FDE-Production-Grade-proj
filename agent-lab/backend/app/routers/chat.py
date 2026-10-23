@@ -31,12 +31,12 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, 
         detail="Conversation not found")
 
-    prior = {
+    prior = (
         db.query(Message)
         .filter(Message.conversation_id == body.conversation_id)
         .order_by(Message.id)
         .all()
-    }
+    )
 
     db.add(
         Message(

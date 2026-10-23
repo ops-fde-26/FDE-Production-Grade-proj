@@ -470,3 +470,130 @@ Two real runs against OpenRouter (`openai/gpt-4o-mini`), both with curl:
 - Not tested: the 502 path (`LLM error: ...`) and the blank-key `RuntimeError`.
 - Code checks: ruff import order and unused-name checks pass on `chat.py` and `llm.py`. Ruff formatting would still change a few hand-written spots (the 404 block in `chat.py` and spacing in the `messages` list in `llm.py`); they were left as written.
 - The tests left conversations 3, 4 and 5 in the local `agent_lab.db`, which is not committed.
+
+# Step 9 - One tool (function calling)
+
+## Goal
+
+The model can call a tool, we run it, and send the result back.
+
+## Notes
+
+- The tool we use is `get_current_time`. It returns the current UTC time as text.
+- Function calling in short: we tell the model which tools exist, the model answers with a tool call (a tool name and arguments) instead of text, we run the tool ourselves, send the result back as a `tool` message, and call the model again to get the final text.
+- The model never runs anything. It only asks, and our code runs the tool.
+
+## What we did
+
+- Created `agent-lab/backend/app/services/tools.py`:
+  - `get_current_time() -> str` returns `datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")`, for example `2026-10-23 15:06:41 UTC`
+  - `TOOL_DEFINITION`: the tool description sent to the model (`type: function`, name `get_current_time`, description `get the current date and time in UTC`, parameters: an empty object, `properties` `{}`, `additionalProperties` `False`)
+  - `run_tool(name: str, arguments: dict[str, str]) -> str` runs the tool by name: `get_current_time` returns the time, any other name returns `unknown tool <name>`
+- Updated `agent-lab/backend/app/services/llm.py` (`get_chat_reply`):
+  - imports `json` and `from app.services.tools import TOOL_DEFINITION, run_tool`
+  - the first model call now passes `tools=[TOOL_DEFINITION]`
+  - if the reply has `tool_calls`:
+    1. append the model's message (the one that holds the tool calls) to `messages`
+    2. for each tool call, parse its arguments with `json.loads(... or "{}")`, run `run_tool(name, arguments)`, and append `{"role": "tool", "tool_call_id": <id>, "content": <result>}`
+    3. call the model again with `messages` (and `tools` again) and use that reply
+  - returns `message.content or ""`
+  - the system prompt is now `you are helpful assistant. Use tools to get the information you need.` and `messages` is annotated `list[dict[str, str]]`
+- Fixed a bug in `agent-lab/backend/app/routers/chat.py` found while testing: the history query was wrapped in `{ }` (a Python set), so every `POST /api/chat` returned 500 with `TypeError: cannot use 'list' as a set element`. It is now wrapped in `( )`. That bug was already in the Step 8 commit
+- `chat.py` did not need any other change, because the tool round happens inside `get_chat_reply`
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+uvicorn app.main:app --port 8000
+```
+
+```bash
+B=http://127.0.0.1:8000
+J='Content-Type: application/json'
+
+# create a conversation and keep its id
+CID=$(curl -sS -X POST $B/api/conversations -H "$J" -d '{"title":"tool test"}' | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# 1. time question (the model should call the tool)
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID,\"message\":\"What is the current date and time in UTC?\"}"
+
+# 2. plain question (no tool needed)
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID,\"message\":\"Say hello in one short sentence.\"}"
+
+# 3. memory still works after a tool turn
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID,\"message\":\"What did I ask you first?\"}"
+
+# 4. unknown conversation (expect 404)
+curl -i -X POST $B/api/chat -H "$J" -d '{"conversation_id":9999,"message":"hi"}'
+
+# compare with the real clock
+date -u
+```
+
+How to tell the tool really ran: the model cannot know the current time by itself, so if the reply matches `date -u` to the minute, the tool was called.
+
+## Output
+
+Time question (HTTP 200, real clock was `15:06:45`):
+
+```json
+{"conversation_id":7,"user_message":"What is the current date and time in UTC?","assistant_message":"The current date and time in UTC is 2026-10-23 15:06:41."}
+```
+
+Plain question (HTTP 200):
+
+```json
+{"conversation_id":7,"user_message":"Say hello in one short sentence.","assistant_message":"Hello! How can I assist you today?"}
+```
+
+Memory after a tool turn (HTTP 200):
+
+```json
+{"conversation_id":7,"user_message":"What did I ask you first?","assistant_message":"You asked for the current date and time in UTC."}
+```
+
+Unknown conversation (HTTP 404):
+
+```json
+{"detail":"Conversation not found"}
+```
+
+Rows saved for conversation 7:
+
+```
+(15, 'user', 'What is the current date and time in UTC?')
+(16, 'assistant', 'The current date and time in UTC is 2026-10-23 15:06:41.')
+(17, 'user', 'Say hello in one short sentence.')
+(18, 'assistant', 'Hello! How can I assist you today?')
+(19, 'user', 'What did I ask you first?')
+(20, 'assistant', 'You asked for the current date and time in UTC.')
+```
+
+## Testing
+
+Real runs against OpenRouter (`openai/gpt-4o-mini`), with curl against the running server:
+
+1. First curl run: every `POST /api/chat` returned 500. The server log showed `TypeError: cannot use 'list' as a set element (unhashable type: 'list')` in `chat.py`. The history query was wrapped in `{ }`. Changing it to `( )` fixed it, and the server was restarted (it runs without `--reload`).
+2. Time question returned 200 with `2026-10-23 15:06:41`, matching the real clock (`15:06:45`), so the tool ran.
+3. Plain question returned 200 with a normal reply and no tool call.
+4. Third question in the same conversation recalled the first question, so history still works with tool turns.
+5. `conversation_id` 9999 returned 404 `Conversation not found`.
+6. The database held exactly six rows for the conversation, alternating user and assistant, with no duplicates.
+7. After the system prompt was edited, `get_chat_reply` was run directly once more: the time question returned `15:07:25` (real clock `15:07:28`) and the plain question returned `Hello!`. This second check did not go through curl.
+
+### What the tests proved
+
+- The model asked for `get_current_time`, our code ran it, and the second model call used the result in its answer.
+- Questions that need no tool still work and make a single model call.
+- History and saving are unaffected by the tool round.
+
+### Notes on the testing
+
+- Only the final assistant reply is saved. The tool call and the tool result are not stored in the `message` table. On later turns the model sees only the final text, which was enough for the memory test.
+- There is a single tool round. If the model asked for another tool on the second call, the reply would be empty (`message.content or ""`). A loop is not built.
+- Not tested: an unknown tool name from the model, and the 502 and blank-key paths.
+- `tools` is sent again on the second call, which was our choice and was not part of the dictation.
+- Code checks: ruff import order and unused-name checks pass on `tools.py`, `llm.py` and `chat.py`. Ruff formatting passes on `tools.py`. It would still change the hand-written spots in `llm.py` (the long system prompt line and `messages= messages`) and `chat.py` (the `conversation` query and the 404 block); they were left as written.
+- The tests left conversations 6 and 7 in the local `agent_lab.db`, which is not committed.
