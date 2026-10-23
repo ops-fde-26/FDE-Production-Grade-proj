@@ -1,0 +1,4 @@
+# FastAPI: web framework (routes, request, response)
+fastapi
+# Uvicorn: ASGI server that runs the FastAPI app
+uvicorn[standard]
