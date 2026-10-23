@@ -12,5 +12,6 @@ Goal: rebuild productiion grade backend concept step by step
 |5|Router + create conversation API|Success|
 |6|Message + simple chat (no AI)||
 |7|Call an LLM|Success|
-|8|One tool||
-|9|Agent wiring (Production Style)||
+|8|Conversation history|Success|
+|9|One tool||
+|10|Agent wiring (Production Style)||

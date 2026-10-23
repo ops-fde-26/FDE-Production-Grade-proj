@@ -344,3 +344,129 @@ Unknown conversation (HTTP 404):
 - The 502 response includes the raw error text from the call, so it can show provider error details to the client.
 - Code checks: ruff import order and unused-import checks pass on all changed files. Ruff formatting passes on `config.py`, `models.py` and `services/llm.py`. `main.py` (the hand-formatted `/health` return) and `routers/chat.py` (the hand-written 404 block with an odd line break and trailing spaces) would still be reformatted by ruff; they were left as written.
 - `agent_lab.db` (with the test rows) and `agent-lab/.env` (the key) are local and are not committed.
+
+# Step 8 - Conversation history
+
+## Goal
+
+Send all prior messages of the conversation to the LLM, not only the latest one.
+
+## Why this step
+
+- Right now the model is forgetful each turn.
+- `get_chat_reply` sends only the system prompt and the latest user message, even though every earlier message is saved in the `message` table.
+- Any real chat app builds a message list from the DB and sends it to the model each turn.
+
+## What we did
+
+- Changed `agent-lab/backend/app/services/llm.py`: `get_chat_reply(user_message: str)` became `get_chat_reply(history: list[dict[str, str]]) -> str`
+  - `history` is a list of `{"role": ..., "content": ...}` dictionaries, for example `[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "how are you"}]` (kept as a docstring example)
+  - the message list sent to the model is now the system prompt followed by the whole history: `messages = [system]`, then `messages.extend(history)`
+- Changed only the LLM call part of `chat()` in `agent-lab/backend/app/routers/chat.py`:
+  1. before calling the LLM, load the conversation's saved messages from the DB (`Message` rows filtered by `conversation_id`, ordered by `Message.id`)
+  2. turn them into `history = [{"role": m.role, "content": m.content}, ...]`
+  3. append the new user message to `history` in memory: `history.append({"role": "user", "content": body.message})`
+  4. call `get_chat_reply(history)` instead of `get_chat_reply(body.message)`
+- Why the new message is appended by hand: `database.py` uses `autoflush=False`, so the new user `Message` that was only `db.add`-ed is not visible to the query yet. The query returns only the earlier messages, and the new one is added once, in memory. If autoflush were turned on, the new message would appear twice
+- Everything else in `chat()` is unchanged: 404 for an unknown conversation, 502 on an LLM error, saving both messages and one commit at the end
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+## How to test memory with curl
+
+Start the server first, then run this in another terminal. It creates a conversation, sends three turns, and the last turn only works if the model sees the earlier ones.
+
+```bash
+B=http://127.0.0.1:8000
+J='Content-Type: application/json'
+
+# 1. create a conversation and keep its id
+CID=$(curl -sS -X POST $B/api/conversations -H "$J" -d '{"title":"history test"}' | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "conversation id: $CID"
+
+# 2. turn 1: tell the model a fact
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID,\"message\":\"My name is Pushpender and my favourite colour is green. Just say OK.\"}"
+
+# 3. turn 2: ask about it, in the SAME conversation (this needs history)
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID,\"message\":\"What is my name and my favourite colour?\"}"
+
+# 4. control: ask the same question in a NEW conversation (it should not know)
+CID2=$(curl -sS -X POST $B/api/conversations -H "$J" -d '{"title":"no memory control"}' | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
+curl -sS -X POST $B/api/chat -H "$J" -d "{\"conversation_id\":$CID2,\"message\":\"What is my name and my favourite colour?\"}"
+
+# 5. unknown conversation (expect 404)
+curl -i -X POST $B/api/chat -H "$J" -d '{"conversation_id":9999,"message":"hi"}'
+```
+
+What to look for:
+
+- Turn 2 answers with the name and colour from turn 1. Before this step the model could not do that, because it only saw the latest message.
+- The control conversation says it does not know, so history stays inside one conversation.
+- Step 5 returns `404` with `{"detail":"Conversation not found"}`.
+
+To see what was saved, run this from `agent-lab/backend` (replace `3` with your conversation id):
+
+```bash
+.venv/Scripts/python.exe -c "import sqlite3; [print(r) for r in sqlite3.connect('agent_lab.db').execute('select id, role, content from message where conversation_id=3 order by id')]"
+```
+
+## Output
+
+Turn 1 (`{"conversation_id":3,...}`):
+
+```json
+{"conversation_id":3,"user_message":"My name is Pushpender and my favourite colour is green. Just say OK.","assistant_message":"OK."}
+```
+
+Turn 2, same conversation:
+
+```json
+{"conversation_id":3,"user_message":"What is my name and my favourite colour?","assistant_message":"Your name is Pushpender, and your favourite colour is green."}
+```
+
+Control, new conversation, same question:
+
+```json
+{"conversation_id":4,"user_message":"What is my name and my favourite colour?","assistant_message":"I'm sorry, but I don't know your name or your favorite color. If you tell me, I’d be happy to remember them for this conversation!"}
+```
+
+Rows saved for conversation 3:
+
+```
+(3, 'user', 'My name is Pushpender and my favourite colour is green. Just say OK.')
+(4, 'assistant', 'OK.')
+(5, 'user', 'What is my name and my favourite colour?')
+(6, 'assistant', 'Your name is Pushpender, and your favourite colour is green.')
+```
+
+## Testing
+
+Two real runs against OpenRouter (`openai/gpt-4o-mini`), both with curl:
+
+1. Two-turn memory test (above): turn 2 recalled the name and the colour, and the control conversation did not know them.
+2. Three-turn test with facts spread over two turns:
+   - turn 1: `I am planning a trip to Jaipur in December.`
+   - turn 2: `My budget is 20000 rupees.` The reply already assumed Jaipur
+   - turn 3: `Remind me: where am I going, when, and what is my budget? Answer in one sentence.` Reply: `You are going to Jaipur in December, with a budget of 20,000 rupees.`
+3. `POST /api/chat` with `conversation_id` 9999 returned `404 {"detail":"Conversation not found"}`.
+
+### What the tests proved
+
+- The model now sees every earlier message of the conversation, not only the latest one.
+- Memory is per conversation: a new conversation starts empty.
+- Each turn saves exactly two rows (user, then assistant) in order, with no duplicates, so appending the new message in memory works as intended.
+- The 404 path still works and calls neither the LLM nor saves anything.
+
+### Notes on the testing
+
+- History is sent in full on every turn with no limit. Long conversations cost more each turn and will eventually reach the model's context limit. Trimming or summarizing is not done yet.
+- The replies were long because the system prompt does not ask for short answers. That affects cost and speed, not correctness.
+- Not tested: the 502 path (`LLM error: ...`) and the blank-key `RuntimeError`.
+- Code checks: ruff import order and unused-name checks pass on `chat.py` and `llm.py`. Ruff formatting would still change a few hand-written spots (the 404 block in `chat.py` and spacing in the `messages` list in `llm.py`); they were left as written.
+- The tests left conversations 3, 4 and 5 in the local `agent_lab.db`, which is not committed.

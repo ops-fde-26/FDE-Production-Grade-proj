@@ -31,24 +31,36 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, 
         detail="Conversation not found")
 
-    user_message = Message(
-        conversation_id=body.conversation_id,
-        role="user",
-        content=body.message,
+    prior = {
+        db.query(Message)
+        .filter(Message.conversation_id == body.conversation_id)
+        .order_by(Message.id)
+        .all()
+    }
+
+    db.add(
+        Message(
+            conversation_id=body.conversation_id,
+            role="user",
+            content=body.message,
+        )
     )
-    db.add(user_message)
+
+    history = [{"role": m.role, "content": m.content} for m in prior]
+    history.append({"role": "user", "content": body.message})
 
     try:
-        reply = get_chat_reply(body.message)
+        reply = get_chat_reply(history)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 
-    assistant_message = Message(
-        conversation_id=body.conversation_id,
-        role="assistant",
-        content=reply,
+    db.add(
+        Message(
+            conversation_id=body.conversation_id,
+            role="assistant",
+            content=reply,
+        )
     )
-    db.add(assistant_message)
     db.commit()
 
     return ChatResponse(
@@ -56,5 +68,3 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         user_message=body.message,
         assistant_message=reply,
     )
-
-   
