@@ -182,3 +182,63 @@ List:
 ```
 
 An empty body `{}` creates a conversation with the default title `new chat`.
+
+## Testing
+
+Start the server first (`uvicorn app.main:app --reload --port 8000` from `agent-lab/backend`), then run these curl steps in another terminal.
+
+1. Health still works:
+
+   ```bash
+   curl http://127.0.0.1:8000/health
+   ```
+
+   Expected: `{"status":"ok","app":"agent lab","debug":true}`
+
+2. Create with an empty body, to check the default title:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/conversations -H "Content-Type: application/json" -d '{}'
+   ```
+
+   Expected: `{"id":1,"title":"new chat"}`
+
+3. Create with a custom title:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/conversations -H "Content-Type: application/json" -d '{"title":"verify test"}'
+   ```
+
+   Expected: `{"id":2,"title":"verify test"}`
+
+4. List, to check all rows come back newest first:
+
+   ```bash
+   curl http://127.0.0.1:8000/api/conversations
+   ```
+
+   Expected: `[{"id":2,"title":"verify test"},{"id":1,"title":"new chat"}]`
+
+5. Check the router is mounted in the OpenAPI schema:
+
+   ```bash
+   curl http://127.0.0.1:8000/openapi.json
+   ```
+
+   Expected paths: `/api/conversations` and `/health`. The interactive docs are at http://127.0.0.1:8000/docs.
+
+### What the tests proved
+
+- The router is mounted: `include_router` exposes `POST` and `GET` on `/api/conversations`.
+- `get_db` gives each request a session: rows created by `POST` are visible to the next `GET` request.
+- The default title `new chat` is applied when the body has no title.
+- The response model returns only `id` and `title` (not `created_at`).
+- The list is ordered newest first.
+- `/health` and table creation on startup were not broken by the change.
+
+### Notes on the testing
+
+- Steps 2 to 4 were run first with throwaway rows (`new chat`, `verify test`), which were deleted from the `conversation` table afterwards.
+- The final run used the title `first chat` (`{"id":1,"title":"first chat"}`); that is the output shown above in "Output".
+- Code checks: `ruff check --select I` (import order) passes on `main.py`. Ruff flags `Depends(get_db)` in argument defaults (`B008`) and Pydantic warns that `class Config` is deprecated (use `ConfigDict`). Both are known and left as they are.
+- `agent_lab.db` is a local file and is not committed.
