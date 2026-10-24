@@ -6,24 +6,17 @@ from app.config import settings
 from app.services.tools import TOOL_DEFINITION, run_tool
 
 
-def get_chat_reply(history: list[dict[str, str]]) -> str:
-    """history example:
-    [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-        {"role": "user", "content": "how are you"},
-    ]
-    """
+def get_chat_reply(
+    history: list[dict[str, str]],
+    system_prompt: str = "you are helpful assistant. Use tools to get the information you need.",
+) -> str:
     if not settings.openai_api_key:
         raise RuntimeError("OpenAI API key is not set")
 
-    client = OpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-    )
+    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": "you are helpful assistant. Use tools to get the information you need."}
+        {"role": "system", "content": system_prompt}
     ]
     messages.extend(history)
 

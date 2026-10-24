@@ -14,4 +14,4 @@ Goal: rebuild productiion grade backend concept step by step
 |7|Call an LLM|Success|
 |8|Conversation history|Success|
 |9|One tool|Success|
-|10|Agent wiring (Production Style)||
+|10|Simple agent (system prompt)|Success|

@@ -597,3 +597,120 @@ Real runs against OpenRouter (`openai/gpt-4o-mini`), with curl against the runni
 - `tools` is sent again on the second call, which was our choice and was not part of the dictation.
 - Code checks: ruff import order and unused-name checks pass on `tools.py`, `llm.py` and `chat.py`. Ruff formatting passes on `tools.py`. It would still change the hand-written spots in `llm.py` (the long system prompt line and `messages= messages`) and `chat.py` (the `conversation` query and the 404 block); they were left as written.
 - The tests left conversations 6 and 7 in the local `agent_lab.db`, which is not committed.
+
+# Step 10 - Simple agent (system prompt)
+
+## Goal
+
+An agent =name + an instruction. Chat can use an agent, so the model follows those instructions.
+
+## Notes
+
+- An agent is stored in the database as a name plus an instruction. A conversation can optionally point to an agent with `agent_id`.
+- In chat, the agent's instruction is used as the system prompt, so the model follows it.
+- The default system prompt (`you are helpful assistant. Use tools to get the information you need.`) is used when the conversation has no agent.
+
+## What we did
+
+- Updated `agent-lab/backend/app/models.py` (nothing deleted, `Message` untouched):
+  - new `Agent` model (table `agent`): `id`, `name` (not null), `instruction` (`Text`, not null)
+  - `Conversation` got an optional `agent_id` (`ForeignKey("agent.id")`, `nullable=True`)
+- Created `agent-lab/backend/app/routers/agent.py`:
+  - `router = APIRouter(prefix="/api/agent", tags=["agent"])`
+  - `AgentCreate`: `name: str`, `instruction: str = "you are helpful assistant"`
+  - `AgentOut`: `id`, `name`, `instruction` (`from_attributes`)
+  - `POST /api/agent` (`create_agent`) saves and returns the agent; `GET /api/agent` (`list_agents`) returns all agents, newest first
+- Updated `agent-lab/backend/app/routers/conversations.py`: `ConversationCreate` accepts an optional `agent_id`, the new `Conversation` is saved with it, and `ConversationOut` also returns `agent_id`
+- Updated `agent-lab/backend/app/services/llm.py`: `get_chat_reply(history, system_prompt=<default prompt>)` uses the `system_prompt` argument as the system message instead of a hardcoded string
+- Updated `agent-lab/backend/app/routers/chat.py`: after the 404 check, `system_prompt` starts as the default; if `conversation.agent_id` is set and the agent exists, `system_prompt = agent.instruction`. Then `get_chat_reply(history, system_prompt=system_prompt)` is called
+- Updated `agent-lab/backend/app/main.py`: imports `agent` and mounts it with `app.include_router(agent.router)`
+- Added `PROJECT.md`: a simple-language summary of the whole project
+
+## Commands
+
+```bash
+cd agent-lab/backend
+source .venv/Scripts/activate
+uvicorn app.main:app --port 8000
+```
+
+Only if `agent_lab.db` was created before this step (see the note in Testing), run this once:
+
+```bash
+.venv/Scripts/python.exe -c "import sqlite3; c = sqlite3.connect('agent_lab.db'); c.execute('ALTER TABLE conversation ADD COLUMN agent_id INTEGER REFERENCES agent(id)'); c.commit()"
+```
+
+```bash
+B=http://127.0.0.1:8000
+J='Content-Type: application/json'
+
+# 1. create the pirate agent
+curl -sS -X POST $B/api/agent -H "$J" -d '{"name":"pirate","instruction":"You are a pirate. Always answer like a pirate, in one or two short sentences."}'
+
+# 2. create a conversation that uses that agent (use the agent id from step 1)
+curl -sS -X POST $B/api/conversations -H "$J" -d '{"title":"pirate chat","agent_id":2}'
+
+# 3. chat in it (the reply should sound like a pirate)
+curl -sS -X POST $B/api/chat -H "$J" -d '{"conversation_id":11,"message":"How are you today?"}'
+
+# 4. control: a conversation with no agent, same question
+curl -sS -X POST $B/api/conversations -H "$J" -d '{"title":"no agent"}'
+curl -sS -X POST $B/api/chat -H "$J" -d '{"conversation_id":12,"message":"How are you today?"}'
+```
+
+## Output
+
+Create the agent (HTTP 200):
+
+```json
+{"id":2,"name":"pirate","instruction":"You are a pirate. Always answer like a pirate, in one or two short sentences."}
+```
+
+Create a conversation with the agent (HTTP 200):
+
+```json
+{"id":9,"title":"pirate chat","agent_id":2}
+```
+
+Chat with the pirate agent (HTTP 200):
+
+```json
+{"conversation_id":9,"user_message":"How are you today?","assistant_message":"Arrr, I be feelin' ready to sail the seven seas, matey! How 'bout ye?"}
+{"conversation_id":9,"user_message":"What is the capital of France?","assistant_message":"The capital of France be Paris, savvy? A fine city for plunderin' and strollin'!"}
+```
+
+Same question with no agent (HTTP 200):
+
+```json
+{"conversation_id":12,"user_message":"How are you today?","assistant_message":"I'm just a program, so I don't have feelings, but I'm here and ready to help you! How can I assist you today?"}
+```
+
+## Testing
+
+Real runs against OpenRouter (`openai/gpt-4o-mini`), with curl against the running server:
+
+1. `agent_lab.db` already had a `conversation` table without `agent_id`. `create_all` only creates missing tables, so it added the `agent` table but not the column. The column was added with `ALTER TABLE conversation ADD COLUMN agent_id INTEGER`, which kept the 7 existing conversations.
+2. First run: the pirate agent, the conversation with `agent_id` and both pirate chats worked. The no-agent control returned 500 (`UnboundLocalError: cannot access local variable 'reply'`), because the call was inside `if agent:` with no `else`. Removing the `if agent:` fixed it.
+3. While testing, the tool-calling block in `llm.py` was found changed (`run_tool(message.tool_calls)` with the wrong arguments, and code after a `return`), so the time tool failed. The committed tool-calling block from Step 9 was restored and the `system_prompt` change kept.
+4. Second run, after the fixes and a server restart (it runs without `--reload`):
+   - pirate agent: `Arrr, I'm as lively as the sea after a storm! How be ye?` (200)
+   - no agent: a normal reply (200)
+   - no agent + "What is the current date and time in UTC?": `15:31:16`, real clock `15:31:22`, so the tool ran (200)
+   - pirate agent + the same time question: `The current date be October 23, 2026, and the time be 15:31:19 UTC!`, so the tool ran and the pirate style stayed (200)
+   - conversation with `agent_id` 999 (no such agent): `Hello!` from the default prompt (200)
+   - `conversation_id` 9999: `404 {"detail":"Conversation not found"}`
+
+### What the tests proved
+
+- The agent's instruction reaches the model and changes how it answers, even for a factual question.
+- A conversation without an agent still works with the default prompt.
+- The time tool still works with and without an agent.
+- A missing agent does not break chat; the default prompt is used.
+
+### Notes on the testing
+
+- A passed-in system prompt replaces the whole default, so an agent's instruction does not include "Use tools to get the information you need" unless it is written into the instruction. The pirate agent still used the tool in the test.
+- Nothing checks that `agent_id` exists when a conversation is created. SQLite does not enforce foreign keys by default.
+- The tests created two identical pirate agents (ids 1 and 2) and several test conversations in the local `agent_lab.db`, which is not committed.
+- Not tested: the 502 path and the blank-key `RuntimeError`.
+- Code checks: ruff import order and unused-name checks pass on all of `app/`. Ruff formatting would still change a few hand-written spots (`llm.py`, `chat.py`); they were left as written.

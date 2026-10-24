@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Conversation, Message
+from app.models import Agent, Conversation, Message
 from app.services.llm import get_chat_reply
 
 router = APIRouter(prefix="/api/chat", tags=["chats"])
@@ -31,6 +31,13 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, 
         detail="Conversation not found")
 
+    system_prompt = "you are helpful assistant. Use tools to get the information you need."
+
+    if conversation.agent_id:
+        agent = db.query(Agent).filter(Agent.id == conversation.agent_id).first()
+        if agent:
+            system_prompt = agent.instruction
+
     prior = (
         db.query(Message)
         .filter(Message.conversation_id == body.conversation_id)
@@ -50,7 +57,7 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
     history.append({"role": "user", "content": body.message})
 
     try:
-        reply = get_chat_reply(history)
+        reply = get_chat_reply(history, system_prompt=system_prompt)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
 

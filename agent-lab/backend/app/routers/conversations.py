@@ -10,11 +10,13 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 class ConversationCreate(BaseModel):
     title: str = "new chat"
+    agent_id: int | None = None
 
 
 class ConversationOut(BaseModel):
     id: int
     title: str
+    agent_id: int | None = None
 
     class Config:
         from_attributes = True
@@ -22,7 +24,7 @@ class ConversationOut(BaseModel):
 
 @router.post("", response_model=ConversationOut)
 def create_conversation(body: ConversationCreate, db: Session = Depends(get_db)):
-    row = Conversation(title=body.title)
+    row = Conversation(title=body.title, agent_id=body.agent_id)
     db.add(row)
     db.commit()
     db.refresh(row)
